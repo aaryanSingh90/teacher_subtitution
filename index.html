@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Teacher Attendance & Substitution Dashboard 🍎</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background-color: #f4f4f9; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        .teacher-card { border: 1px solid #ddd; padding: 15px; margin-bottom: 10px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; gap:10px; }
+        .teacher-info { flex-grow: 1; min-width: 0; }
+        .status-present { color: green; font-weight: bold; margin-left: 8px; }
+        .status-absent { color: red; font-weight: bold; margin-left: 8px; }
+        button { padding: 8px 15px; margin-left: 5px; cursor: pointer; border: none; border-radius: 4px; transition: background-color 0.2s; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-present { background-color: #4CAF50; color: white; }
+        .btn-absent { background-color: #f44336; color: white; }
+        .substitution-results { margin-top: 20px; border-top: 2px solid #ccc; padding-top: 15px; }
+        .slot-coverage { background: #e0f7fa; padding: 15px; margin-bottom: 15px; border-radius: 6px; border-left: 5px solid #00bcd4; }
+        .lab-coverage { border-left: 5px solid #ff9800; background: #fff3e0; }
+        .substitute-list { list-style: none; padding-left: 0; }
+        .substitute-list li { margin-bottom: 5px; background: #fff; padding: 8px; border-radius: 3px; border-bottom: 1px solid #eee; }
+        .muted { color: #666; }
+        .loading { font-style: italic; color: #666; }
+        .error { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Teacher Attendance Dashboard 🍎</h1>
+
+        <p>Select today's day:
+            <select id="daySelect">
+                <option value="MON">Monday</option>
+                <option value="TUE">Tuesday</option>
+                <option value="WED" selected>Wednesday</option>
+                <option value="THUR">Thursday</option>
+                <option value="FRI">Friday</option>
+            </select>
+        </p>
+
+        <hr />
+
+        <div id="teacherList">Loading teachers...</div>
+
+        <div class="substitution-results" id="substitutionResults">
+            <h2>Substitution Required:</h2>
+            <p class="muted">Select an absent teacher to see substitution options for the selected day.</p>
+        </div>
+    </div>
+
+    <script>
+       const API_URL = 'http://localhost:3000/api';
+        const teacherListDiv = document.getElementById('teacherList');
+        const substitutionResultsDiv = document.getElementById('substitutionResults');
+        const daySelect = document.getElementById('daySelect');
+        let lastAbsentTeacherId = null;
+
+        function normalizeAttendance(raw) {
+            if (raw === undefined || raw === null) return '';
+            const s = String(raw).trim().toLowerCase();
+            if (s === 'present') return 'present';
+            if (s === 'absent') return 'absent';
+            return s;
+        }
+
+        async function fetchTeachers() {
+            teacherListDiv.innerHTML = '<div class="loading">Loading teachers...</div>';
+            try {
+                const res = await fetch(`${API_URL}/teachers`);
+                if (!res.ok) throw new Error('Network response was not ok.');
+                const teachers = await res.json();
+                renderTeachers(teachers);
+            } catch (err) {
+                console.error('Fetch Teachers Error:', err);
+                teacherListDiv.innerHTML = '<p class="error">❌ Could not connect to the backend API. Please ensure the server is running on port 3000 (or the correct host).</p>';
+            }
+        }
+
+        function renderTeachers(teachers) {
+            if (!teachers || teachers.length === 0) {
+                teacherListDiv.innerHTML = '<p style="color:blue;">No teachers found in the database.</p>';
+                return;
+            }
+            teacherListDiv.innerHTML = '';
+            teachers.forEach(teacher => {
+                const attendanceNormalized = normalizeAttendance(teacher.attendance);
+                const displayAttendance = attendanceNormalized === 'present' ? 'Present'
+                    : attendanceNormalized === 'absent' ? 'Absent'
+                    : (teacher.attendance || 'Unknown');
+
+                const card = document.createElement('div');
+                card.className = 'teacher-card';
+                card.id = `card-${teacher.teacher_id}`;
+                card.innerHTML = `
+                    <div class="teacher-info" title="ID: ${teacher.teacher_id}">
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <strong style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${teacher.teacher_name}</strong>
+                            <span style="color:#555;">(ID: ${teacher.teacher_id})</span>
+                            <span id="status-${teacher.teacher_id}" class="${attendanceNormalized === 'present' ? 'status-present' : 'status-absent'}">${displayAttendance}</span>
+                        </div>
+                    </div>
+                    <div>
+                        <button data-teacher="${teacher.teacher_id}" data-status="Absent" class="btn-absent">Mark Absent</button>
+                        <button data-teacher="${teacher.teacher_id}" data-status="Present" class="btn-present">Mark Present</button>
+                    </div>
+                `;
+                teacherListDiv.appendChild(card);
+            });
+
+            teacherListDiv.querySelectorAll('button[data-teacher]').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    const teacherId = e.currentTarget.dataset.teacher;
+                    const status = e.currentTarget.dataset.status;
+                    await handleAttendance(teacherId, status);
+                });
+            });
+        }
+
+        async function handleAttendance(teacherId, status) {
+            const card = document.getElementById(`card-${teacherId}`);
+            const btns = card ? Array.from(card.querySelectorAll('button')) : [];
+            btns.forEach(b => b.disabled = true);
+
+            try {
+                const res = await fetch(`${API_URL}/attendance`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ teacherId, status })
+                });
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}));
+                    throw new Error(errData.message || 'Failed to update attendance.');
+                }
+
+                const statusSpan = document.getElementById(`status-${teacherId}`);
+                const attNorm = normalizeAttendance(status);
+                statusSpan.textContent = attNorm === 'present' ? 'Present' : attNorm === 'absent' ? 'Absent' : status;
+                statusSpan.className = attNorm === 'present' ? 'status-present' : 'status-absent';
+
+                if (attNorm === 'absent') {
+                    lastAbsentTeacherId = teacherId;
+                    searchSubstitutes(teacherId);
+                } else {
+                    if (lastAbsentTeacherId === teacherId) {
+                        lastAbsentTeacherId = null;
+                        substitutionResultsDiv.innerHTML = '<h2>Substitution Required:</h2><p class="muted">Select an absent teacher to see substitution options for the selected day.</p>';
+                    }
+                }
+            } catch (err) {
+                alert(`Error updating attendance for ${teacherId}: ${err.message}`);
+                console.error(err);
+            } finally {
+                btns.forEach(b => b.disabled = false);
+            }
+        }
+
+        async function searchSubstitutes(teacherId) {
+            const day = daySelect.value || 'MON';
+            substitutionResultsDiv.innerHTML = `<h2>Substitution Search for ${teacherId} on ${day}: <span class="loading">Loading...</span></h2>`;
+
+            try {
+                const res = await fetch(`${API_URL}/substitute/${encodeURIComponent(teacherId)}/${encodeURIComponent(day)}`);
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.message || 'Substitution search failed.');
+                }
+                const data = await res.json();
+                renderSubstitutes(data);
+            } catch (err) {
+                substitutionResultsDiv.innerHTML = `<h2>Error:</h2><p class="error">Failed to load substitution data. ${err.message}</p>`;
+                console.error("Search Substitutes Error:", err);
+            }
+        }
+
+        function renderSubstitutes(data) {
+            const absentName = data.absent_teacher || data.absentName || 'Unknown Teacher';
+            const absentTeacherSubject = data.absent_teacher_subject || data.absent_teacher_subject_detail || 'N/A';
+            const classesToCover = (data.schedule_to_cover || data.schedule || []).slice();
+
+            let html = `<h2>Substitution for ${absentName} <small class="muted">(${absentTeacherSubject})</small> on ${daySelect.value}:</h2>`;
+
+            if (classesToCover.length === 0) {
+                html += '<p style="color: blue; font-weight: bold;">✅ No classes to cover, or the teacher is not marked absent / no suitable substitutes available for the times.</p>';
+                substitutionResultsDiv.innerHTML = html;
+                return;
+            }
+
+            // sort & merge lab slots (we use slot_id as authoritative)
+            classesToCover.sort((a,b) => (a.slot_id||0) - (b.slot_id||0));
+            const finalSchedule = [];
+            for (let i = 0; i < classesToCover.length; i++) {
+                let currentSlot = { ...classesToCover[i] };
+                currentSlot.available_substitutes = currentSlot.available_substitutes || [];
+
+                if (currentSlot.is_lab && i + 1 < classesToCover.length) {
+                    const nextSlot = classesToCover[i + 1];
+                    if (nextSlot && nextSlot.slot_id === currentSlot.slot_id + 1 && nextSlot.class_info === currentSlot.class_info) {
+                        currentSlot.slot = `${currentSlot.slot} - ${nextSlot.slot}`;
+                        currentSlot.room = (currentSlot.room === nextSlot.room) ? currentSlot.room : `${currentSlot.room || 'N/A'} / ${nextSlot.room || 'N/A'}`;
+
+                        const curSubs = new Map((currentSlot.available_substitutes || []).map(s => [s.substitute_id, s]));
+                        const nextSubs = new Map(((nextSlot.available_substitutes || [])).map(s => [s.substitute_id, s]));
+
+                        const intersection = Array.from(curSubs.keys()).filter(id => nextSubs.has(id)).map(id => {
+                            const s = curSubs.get(id);
+                            const nextPriority = nextSubs.get(id).priority || '';
+                            const isBest = (String(s.priority||'').toUpperCase().includes('BEST') || String(nextPriority).toUpperCase().includes('BEST'));
+                            return {
+                                ...s,
+                                priority: isBest ? 'BEST FIT (Same Subject)' : (s.priority || 'GOOD FIT (Free, Any Subject)')
+                            };
+                        });
+
+                        currentSlot.available_substitutes = intersection;
+                        i++; // skip next
+                    }
+                }
+                finalSchedule.push(currentSlot);
+            }
+
+            finalSchedule.forEach(slot => {
+                const labClass = slot.is_lab ? ' lab-coverage' : '';
+                const subjectTag = `<strong style="color: #6200EE;">(${slot.subject || ''} ${slot.is_lab ? '- LAB' : ''})</strong>`;
+                const subs = slot.available_substitutes || [];
+                html += `
+                    <div class="slot-coverage${labClass}">
+                        <p><strong>🕒 Time Slot:</strong> ${slot.slot || 'N/A'}</p>
+                        <p><strong>📚 Class/Activity:</strong> ${slot.class_info || 'N/A'} ${subjectTag}</p>
+                        <p><strong>📍 Room:</strong> ${slot.room || 'N/A'}</p>
+                        <h4>Available Substitutes:</h4>
+                        <ul class="substitute-list">
+                            ${subs.length === 0
+                                ? '<li><span class="error">No available substitutes found for this slot.</span></li>'
+                                : subs.map(sub => `
+                                    <li>
+                                        <strong>${sub.substitute_name}</strong> (${sub.substitute_id}) -
+                                        <span style="font-weight: bold; ${String(sub.priority||'').toUpperCase().includes('BEST') ? 'color: green;' : 'color: orange;'}">
+                                            ${sub.priority || 'GOOD FIT (Free, Any Subject)'}
+                                        </span>
+                                        ${sub.subjects_detail || sub.subjects_codes
+                                            ? `<div class="muted">Teaches: ${sub.subjects_detail || sub.subjects_codes}</div>`
+                                            : `<div class="muted">Teaches: —</div>`
+                                        }
+                                    </li>
+                                  `).join('')}
+                        </ul>
+                    </div>
+                `;
+            });
+
+            substitutionResultsDiv.innerHTML = html;
+        }
+
+        // Init
+        fetchTeachers();
+        daySelect.addEventListener('change', () => {
+            if (lastAbsentTeacherId) {
+                searchSubstitutes(lastAbsentTeacherId);
+            } else {
+                substitutionResultsDiv.innerHTML = '<h2>Substitution Required:</h2><p class="muted">Select an absent teacher to see substitution options for the new day.</p>';
+            }
+        });
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+//  const API_URL = 'http://localhost:3000/api'; // Use absolute path
